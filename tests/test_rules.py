@@ -1,7 +1,12 @@
 import unittest
 
 from milluminsync.osc import OscMessage
-from milluminsync.rules import Rule, default_rules
+from milluminsync.config import SYNC_BY_NAME, build_rules
+from milluminsync.rules import Rule
+
+
+def default_rules():
+    return build_rules()
 
 
 def fire(rules, msg):
@@ -22,10 +27,7 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(out[0].args, [4])
 
     def test_launch_by_name(self):
-        rules = default_rules()
-        for r in rules:
-            r.enabled = r.name == "Column launch (by name)"
-        out = fire(rules, OscMessage("/millumin/board/launchedColumn", [4, "Scene 4"]))
+        out = fire(build_rules(SYNC_BY_NAME), OscMessage("/millumin/board/launchedColumn", [4, "Scene 4"]))
         self.assertEqual(out[0].args, ["Scene 4"])
         self.assertEqual(out[0].type_tags(), "s")
 
@@ -40,8 +42,15 @@ class RuleTest(unittest.TestCase):
         msg = OscMessage("/millumin/action/launchColumn", ["Intro"])
         self.assertEqual(fire(default_rules(), msg)[0].args, ["Intro"])
 
-    def test_unrelated_address_dropped(self):
-        self.assertEqual(fire(default_rules(), OscMessage("/millumin/layer:A/media/time", [1.0])), [])
+    def test_media_time_is_not_forwarded(self):
+        # Like Chataigne: seeking on the master must not move the slave.
+        for addr in ("/millumin/layer:A/media/time", "/millumin/selectedLayer/media/time",
+                     "/millumin/board/stoppedColumn"):
+            self.assertEqual(fire(default_rules(), OscMessage(addr, [1.0, 60.0])), [], addr)
+
+    def test_stop_sync_option(self):
+        out = fire(build_rules(sync_stop=True), OscMessage("/millumin/board/stoppedColumn", [2, "x"]))
+        self.assertEqual([(o.address, o.args) for o in out], [("/millumin/action/stopColumn", [])])
 
     def test_wildcard_capture(self):
         r = Rule(match="/millumin/layer:*/media/time", send="/millumin/layer:{1}/media/time", args=["$0:f"])

@@ -34,7 +34,7 @@ def run_headless(config_path: Path | None, listen_port: int | None, targets: lis
     def log(ev):
         print(f"{time.strftime('%H:%M:%S')} {ev.kind.upper():5} {ev.text}", flush=True)
 
-    relay = Relay(port, tgts, cfg.rules, on_event=log)
+    relay = Relay(port, tgts, cfg.rules(), on_event=log)
     relay.start()
     try:
         while True:
@@ -49,7 +49,7 @@ def run_headless(config_path: Path | None, listen_port: int | None, targets: lis
 def run_selftest(timeout: float = 10.0) -> int:
     """Start the real GUI, push a Millumin feedback message through it, check the output."""
     import tkinter as tk
-    from .gui import App
+    from .gui import App, create_root
 
     tmp = Path(tempfile.mkdtemp()) / "config.json"
     receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -57,8 +57,8 @@ def run_selftest(timeout: float = 10.0) -> int:
     receiver.setblocking(False)
     relay_port = _free_udp_port()
 
-    cfg = Config(listen_port=relay_port, targets=[f"127.0.0.1:{receiver.getsockname()[1]}"])
-    root = tk.Tk()
+    cfg = Config(listen_port=relay_port, targets=[f"127.0.0.1:{receiver.getsockname()[1]}"], autostart=False)
+    root = create_root()
     app = App(root, cfg, tmp)
     result = {"ok": False, "detail": "timeout"}
     deadline = time.monotonic() + timeout
@@ -69,8 +69,11 @@ def run_selftest(timeout: float = 10.0) -> int:
             root.destroy()
             return
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.sendto(encode_message(OscMessage("/millumin/board/launchedColumn", [3, "Intro"])),
-                     ("127.0.0.1", app.relay.listen_port))
+            dest = ("127.0.0.1", app.relay.listen_port)
+            # Media time feedback must NOT reach the slave; only the column launch should.
+            for t in (1.0, 1.02, 1.04):
+                s.sendto(encode_message(OscMessage("/millumin/layer:Video/media/time", [t, 60.0])), dest)
+            s.sendto(encode_message(OscMessage("/millumin/board/launchedColumn", [3, "Intro"])), dest)
         root.after(20, poll)
 
     def poll() -> None:
@@ -90,10 +93,18 @@ def run_selftest(timeout: float = 10.0) -> int:
         msgs = list(decode_packet(data))
         got = msgs[0] if msgs else None
         if got and got.address == "/millumin/action/launchColumn" and got.args == [3] and got.type_tags() == "i":
-            result["ok"] = True
             result["detail"] = str(got)
+            root.after(300, check_ui)
         else:
             result["detail"] = f"unexpected message: {got}"
+            app.on_close()
+
+    def check_ui() -> None:
+        shown = app.lbl_last.cget("text")
+        if shown == "Column 3  Intro":
+            result["ok"] = True
+        else:
+            result["detail"] += f" / UI shows {shown!r}"
         app.on_close()
 
     root.after(300, kick)

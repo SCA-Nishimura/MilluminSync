@@ -23,6 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
       - name: Unit + UDP end-to-end tests
         run: python -m unittest discover -s tests -v
       - name: GUI self test (real Tk window, relays one OSC message)
@@ -37,13 +38,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install PyInstaller
-        run: python -m pip install pyinstaller==6.11.1
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller==6.11.1
       - name: Build MilluminSync.app
         run: |
           pyinstaller --noconfirm --windowed --name MilluminSync \
             --osx-bundle-identifier jp.milluminsync.app \
+            --collect-data customtkinter \
             run_milluminsync.py
+          # It runs hidden behind full-screen Millumin during the show:
+          # keep macOS App Nap from throttling it.
+          plutil -insert NSAppSleepDisabled -bool YES dist/MilluminSync.app/Contents/Info.plist
+          plutil -p dist/MilluminSync.app/Contents/Info.plist | grep NSAppSleepDisabled
+          # Editing Info.plist breaks PyInstaller's ad-hoc signature; Apple Silicon needs a valid one.
+          codesign --force --deep --sign - dist/MilluminSync.app
+          codesign --verify --deep --strict dist/MilluminSync.app
       - name: Self test the built app binary
         run: ./dist/MilluminSync.app/Contents/MacOS/MilluminSync --selftest
       - name: Zip
@@ -69,8 +78,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pyinstaller==6.11.1
-      - run: pyinstaller --noconfirm --onefile --windowed --name MilluminSync run_milluminsync.py
+      - run: python -m pip install -r requirements.txt pyinstaller==6.11.1
+      - run: pyinstaller --noconfirm --onefile --windowed --collect-data customtkinter --name MilluminSync run_milluminsync.py
       - uses: actions/upload-artifact@v4
         with:
           name: MilluminSync-Windows

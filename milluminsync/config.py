@@ -9,11 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .rules import Rule, default_rules
+from .rules import Rule
 
 APP_NAME = "MilluminSync"
 DEFAULT_LISTEN_PORT = 8000
 DEFAULT_TARGET = "127.0.0.1:5000"
+SYNC_BY_INDEX = "index"
+SYNC_BY_NAME = "name"
 
 
 def config_dir() -> Path:
@@ -30,19 +32,51 @@ def default_config_path() -> Path:
     return config_dir() / "config.json"
 
 
+def build_rules(sync_by: str = SYNC_BY_INDEX, sync_stop: bool = False) -> list[Rule]:
+    """Column-only sync, like a Chataigne Millumin setup.
+
+    Media time and other feedback is never forwarded, so seeking on the master
+    does not move the slave.
+    """
+    rules = [
+        Rule(
+            name="Column launch",
+            match="/millumin/board/launchedColumn",
+            send="/millumin/action/launchColumn",
+            # launchedColumn carries (index, name). An int selects by index, a string by name.
+            args=["$1:s"] if sync_by == SYNC_BY_NAME else ["$0:i"],
+        ),
+    ]
+    if sync_stop:
+        rules.append(Rule(
+            name="Column stop",
+            match="/millumin/board/stoppedColumn",
+            send="/millumin/action/stopColumn",
+            args=[],
+        ))
+    # Commands sent straight to MilluminSync (from a controller etc.) reach the slave unchanged.
+    rules.append(Rule(name="Action pass-through", match="/millumin/action/**"))
+    return rules
+
+
 @dataclass
 class Config:
     listen_port: int = DEFAULT_LISTEN_PORT
     targets: list[str] = field(default_factory=lambda: [DEFAULT_TARGET])
-    rules: list[Rule] = field(default_factory=default_rules)
-    autostart: bool = False
+    sync_by: str = SYNC_BY_INDEX
+    sync_stop: bool = False
+    autostart: bool = True
+
+    def rules(self) -> list[Rule]:
+        return build_rules(self.sync_by, self.sync_stop)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "listen_port": self.listen_port,
             "targets": list(self.targets),
+            "sync_by": self.sync_by,
+            "sync_stop": self.sync_stop,
             "autostart": self.autostart,
-            "rules": [r.to_dict() for r in self.rules],
         }
 
     @classmethod
@@ -51,11 +85,12 @@ class Config:
         cfg.listen_port = int(d.get("listen_port", DEFAULT_LISTEN_PORT))
         targets = d.get("targets", [DEFAULT_TARGET])
         if isinstance(targets, str):
-            targets = [t for t in targets.split(",")]
-        cfg.targets = [str(t).strip() for t in targets if str(t).strip()]
-        cfg.autostart = bool(d.get("autostart", False))
-        if "rules" in d:
-            cfg.rules = [Rule.from_dict(r) for r in d["rules"]]
+            targets = targets.split(",")
+        cfg.targets = [str(t).strip() for t in targets if str(t).strip()] or [DEFAULT_TARGET]
+        sync_by = d.get("sync_by", SYNC_BY_INDEX)
+        cfg.sync_by = sync_by if sync_by in (SYNC_BY_INDEX, SYNC_BY_NAME) else SYNC_BY_INDEX
+        cfg.sync_stop = bool(d.get("sync_stop", False))
+        cfg.autostart = bool(d.get("autostart", True))
         return cfg
 
     @classmethod
@@ -63,8 +98,12 @@ class Config:
         path = path or default_config_path()
         if not path.exists():
             return cls()
-        with open(path, "r", encoding="utf-8") as f:
-            return cls.from_dict(json.load(f))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return cls.from_dict(json.load(f))
+        except (OSError, ValueError, TypeError):
+            # A broken config file must never stop the show; fall back to defaults.
+            return cls()
 
     def save(self, path: Path | None = None) -> Path:
         path = path or default_config_path()

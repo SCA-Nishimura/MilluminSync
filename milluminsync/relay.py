@@ -35,11 +35,12 @@ class Target:
 @dataclass
 class RelayEvent:
     """Something that happened inside the relay, for logging / UI."""
-    kind: str  # "in", "out", "drop", "error", "info"
+    kind: str  # "in", "out", "error", "info"
     text: str
     source: str = ""
     address: str = ""
     timestamp: float = 0.0
+    message: OscMessage | None = None
 
 
 EventCallback = Callable[[RelayEvent], None]
@@ -61,6 +62,9 @@ class Relay:
         self.on_event = on_event
         self.received = 0
         self.forwarded = 0
+        # Messages no rule matched (media time etc.), counted per address instead of
+        # logged one by one: Millumin sends these every frame.
+        self._ignored: dict[str, int] = {}
         self._sock: socket.socket | None = None
         self._send_sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -135,7 +139,7 @@ class Relay:
                 try:
                     sock.sendto(data, (t.host, t.port))
                     self.forwarded += 1
-                    self._emit("out", f"{msg}  -> {t}", address=msg.address)
+                    self._emit("out", f"{msg}  -> {t}", address=msg.address, message=msg)
                 except OSError as e:
                     self._emit("error", f"send to {t} failed: {e}")
         finally:
@@ -179,16 +183,25 @@ class Relay:
                 continue
             for msg in messages:
                 self.received += 1
-                self._emit("in", str(msg), source=source, address=msg.address)
                 outs = self.process(msg)
                 if not outs:
-                    self._emit("drop", f"no rule matched {msg.address}", source=source, address=msg.address)
+                    with self._lock:
+                        self._ignored[msg.address] = self._ignored.get(msg.address, 0) + 1
+                    continue
+                self._emit("in", str(msg), source=source, address=msg.address, message=msg)
                 for o in outs:
                     self.send(o)
 
-    def _emit(self, kind: str, text: str, source: str = "", address: str = "") -> None:
+    def take_ignored(self) -> dict[str, int]:
+        """Return and reset the per-address counts of messages that were not forwarded."""
+        with self._lock:
+            ignored, self._ignored = self._ignored, {}
+        return ignored
+
+    def _emit(self, kind: str, text: str, source: str = "", address: str = "",
+              message: OscMessage | None = None) -> None:
         if self.on_event is not None:
             try:
-                self.on_event(RelayEvent(kind, text, source, address, time.time()))
+                self.on_event(RelayEvent(kind, text, source, address, time.time(), message))
             except Exception:
                 pass

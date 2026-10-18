@@ -159,32 +159,3 @@ class Rule:
             out_tags.append(OscMessage("/", [spec]).type_tags())
         return OscMessage(address, out_args, "".join(out_tags))
 
-
-def default_rules() -> list[Rule]:
-    """Rules that make a slave Millumin follow a master Millumin's column launches."""
-    return [
-        Rule(
-            name="Column launch (by index)",
-            match="/millumin/board/launchedColumn",
-            send="/millumin/action/launchColumn",
-            args=["$0:i"],
-        ),
-        Rule(
-            name="Column launch (by name)",
-            match="/millumin/board/launchedColumn",
-            send="/millumin/action/launchColumn",
-            args=["$1:s"],
-            enabled=False,
-        ),
-        Rule(
-            name="Column stop",
-            match="/millumin/board/stoppedColumn",
-            send="/millumin/action/stopColumn",
-            args=[],
-            enabled=False,
-        ),
-        Rule(
-            name="Pass through /millumin/action/*",
-            match="/millumin/action/**",
-        ),
-    ]

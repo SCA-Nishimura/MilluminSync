@@ -39,7 +39,7 @@ class RelayTest(unittest.TestCase):
         self.relay = Relay(
             0,
             [Target("127.0.0.1", s.port) for s in self.slaves],
-            cfg.rules,
+            cfg.rules(),
             listen_host="127.0.0.1",
             on_event=self.events.append,
         )
@@ -81,6 +81,16 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.slaves[0].recv().address, "/millumin/action/stopColumn")
         self.assertTrue(any(e.kind == "error" for e in self.events))
 
+    def test_media_time_counted_not_forwarded(self):
+        for t in range(50):
+            send(self.relay.listen_port, OscMessage("/millumin/layer:V/media/time", [t / 60, 10.0]))
+        send(self.relay.listen_port, OscMessage("/millumin/board/launchedColumn", [7, "c"]))
+        self.assertEqual(self.slaves[0].recv().args, [7])
+        self.assertEqual(self.relay.take_ignored(), {"/millumin/layer:V/media/time": 50})
+        self.assertEqual(self.relay.take_ignored(), {})
+        # Nothing per-message was logged for the ignored traffic.
+        self.assertFalse(any("media/time" in e.text for e in self.events))
+
     def test_rule_update_while_running(self):
         from milluminsync.rules import Rule
         self.relay.update(rules=[Rule(match="/x", send="/millumin/action/launchColumn", args=[9])])
@@ -103,13 +113,19 @@ class PortConflictTest(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_save_load(self):
         path = Path(tempfile.mkdtemp()) / "c.json"
-        cfg = Config(listen_port=9000, targets=["192.168.0.200:5000", "192.168.0.201:5000"])
-        cfg.rules[0].enabled = False
+        cfg = Config(listen_port=9000, targets=["192.168.0.200:5000", "192.168.0.201:5000"],
+                     sync_by="name", sync_stop=True, autostart=False)
         cfg.save(path)
+        self.assertEqual(Config.load(path), cfg)
+
+    def test_broken_or_old_config_falls_back(self):
+        path = Path(tempfile.mkdtemp()) / "c.json"
+        path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(Config.load(path), Config())
+        # v0.1.0 files had a "rules" list; it is ignored now.
+        path.write_text('{"listen_port": 8100, "rules": [{"match": "/x"}], "sync_by": "bogus"}', encoding="utf-8")
         loaded = Config.load(path)
-        self.assertEqual(loaded.listen_port, 9000)
-        self.assertEqual(loaded.targets, cfg.targets)
-        self.assertEqual(loaded.rules, cfg.rules)
+        self.assertEqual((loaded.listen_port, loaded.sync_by), (8100, "index"))
 
     def test_target_parse(self):
         self.assertEqual(Target.parse("192.168.0.200:5000"), Target("192.168.0.200", 5000))
