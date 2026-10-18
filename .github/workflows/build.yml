@@ -1,0 +1,77 @@
+name: Test & Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed only to attach builds to a GitHub Release on v* tags
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit + UDP end-to-end tests
+        run: python -m unittest discover -s tests -v
+      - name: GUI self test (real Tk window, relays one OSC message)
+        run: python run_milluminsync.py --selftest
+
+  build-macos:
+    name: Build macOS app
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller==6.11.1
+      - name: Build MilluminSync.app
+        run: |
+          pyinstaller --noconfirm --windowed --name MilluminSync \
+            --osx-bundle-identifier jp.milluminsync.app \
+            run_milluminsync.py
+      - name: Self test the built app binary
+        run: ./dist/MilluminSync.app/Contents/MacOS/MilluminSync --selftest
+      - name: Zip
+        run: |
+          cd dist
+          ditto -c -k --keepParent MilluminSync.app MilluminSync-macOS-$(uname -m).zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MilluminSync-macOS
+          path: dist/MilluminSync-macOS-*.zip
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/MilluminSync-macOS-*.zip --generate-notes || gh release upload "${GITHUB_REF_NAME}" dist/MilluminSync-macOS-*.zip --clobber
+
+  build-windows:
+    name: Build Windows exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pyinstaller==6.11.1
+      - run: pyinstaller --noconfirm --onefile --windowed --name MilluminSync run_milluminsync.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MilluminSync-Windows
+          path: dist/MilluminSync.exe
