@@ -12,8 +12,9 @@ from typing import Any
 from .rules import Rule
 
 APP_NAME = "MilluminSync"
-DEFAULT_LISTEN_PORT = 8000
-DEFAULT_TARGET = "127.0.0.1:5000"
+DEFAULT_LISTEN_PORT = 12000
+# Not 5000: macOS AirPlay Receiver (ControlCenter) also uses port 5000.
+DEFAULT_TARGET = "127.0.0.1:12001"
 SYNC_BY_INDEX = "index"
 SYNC_BY_NAME = "name"
 

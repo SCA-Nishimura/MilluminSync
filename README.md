@@ -10,8 +10,8 @@ Master の Millumin で Column を起動すると、Millumin は `/millumin/boar
 PC1 (Master) 192.168.0.100                 PC2 (Slave) 192.168.0.200
 ┌──────────────┐  /millumin/board/      ┌──────────────┐  /millumin/action/    ┌──────────────┐
 │  Millumin    │  launchedColumn 3 "A"  │ MilluminSync │  launchColumn 3       │  Millumin    │
-│  OSC Sender  │ ─────────────────────▶ │  受信 :8000   │ ────────────────────▶ │ OSC Listener │
-│              │  → 192.168.0.200:8000  │  (裏で常駐)   │  → 127.0.0.1:5000     │  :5000       │
+│  OSC Sender  │ ─────────────────────▶ │  受信 :12000   │ ────────────────────▶ │ OSC Listener │
+│              │  → 192.168.0.200:12000 │  (裏で常駐)   │  → 127.0.0.1:12001    │  :12001      │
 └──────────────┘                        └──────────────┘                       └──────────────┘
 ```
 
@@ -28,10 +28,10 @@ Millumin は再生中、動画の時間情報を毎フレーム OSC で送り続
 ## セットアップ (上の図の構成)
 
 1. **PC2 (Slave)** で MilluminSync を起動します。
-   - 受信ポート: `8000`
-   - Slave の Millumin: `127.0.0.1:5000` (同じPCの Millumin の受信ポート)
+   - 受信ポート: `12000`
+   - Slave の Millumin: `127.0.0.1:12001` (同じPCの Millumin の受信ポート)
    - 「アプリを開いたら自動で開始する」は初期状態でオンです。
-2. **PC2 の Millumin**: OSC の **Listener (入力)** を有効にし、ポートを `5000` にします。
+2. **PC2 の Millumin**: OSC の **Listener (入力)** を有効にし、ポートを `12001` にします。
 3. **PC1 (Master) の Millumin**: OSC の **Sender (出力)** を有効にします。送信先には、MilluminSync の画面に大きく出ている「Master の Millumin の OSC 送信先に入力」の IP とポートを入れます。
 4. PC1 で Column を起動します。MilluminSync の「最後の同期」に Column 番号が出れば、PC2 の Millumin も同じ Column を起動しています。
 
@@ -42,7 +42,7 @@ Millumin は再生中、動画の時間情報を毎フレーム OSC で送り続
   - 「名前で合わせる」: 同じ名前の Column を起動します。並び順が違っても使えます。
   - Millumin は存在しない番号や名前を指定されると、再生中の Column を止めます。
 - **テスト**: 「Slave だけでテスト」に Column 番号か名前を入れて「起動」を押すと、Master がなくても Slave に直接送れます。
-- **送信先を複数にする**: Slave が複数台あるときは、送信先をカンマ区切りで書けます。例: `127.0.0.1:5000, 192.168.0.201:5000`
+- **送信先を複数にする**: Slave が複数台あるときは、送信先をカンマ区切りで書けます。例: `127.0.0.1:12001, 192.168.0.201:12001`
 - **コントローラーから送る**: `/millumin/action/...` を MilluminSync に送ると、そのまま Slave に転送されます。
 
 設定は自動で保存されます。
@@ -105,5 +105,5 @@ python -m unittest discover -s tests -v
 画面なしでも動かせます。
 
 ```bash
-python run_milluminsync.py --headless --port 8000 --target 127.0.0.1:5000
+python run_milluminsync.py --headless --port 12000 --target 127.0.0.1:12001
 ```

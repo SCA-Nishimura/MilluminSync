@@ -10,6 +10,7 @@ from __future__ import annotations
 import queue
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -17,11 +18,13 @@ import customtkinter as ctk
 
 from . import __version__
 from .config import SYNC_BY_INDEX, SYNC_BY_NAME, Config
+from .diag import Diagnosis, diagnose_listen, diagnose_target, port_users
 from .osc import OscMessage
 from .relay import Relay, RelayEvent, Target
 
 MAX_LOG_LINES = 500
 MAX_PENDING_EVENTS = 2000
+DIAG_INTERVAL_MS = 10_000
 
 if sys.platform == "darwin":
     FONT, MONO = "Hiragino Sans", "Menlo"
@@ -78,6 +81,9 @@ class App:
         self.events: "queue.Queue[RelayEvent]" = queue.Queue(maxsize=MAX_PENDING_EVENTS)
         self.events_lost = 0
         self.relay: Relay | None = None
+        self._diag_results: "queue.Queue[tuple[int, Diagnosis]]" = queue.Queue()
+        self._diag_running = False
+        self._diag_last: dict[int, Diagnosis] = {}
         self._applied: tuple[int, list[Target]] | None = None
 
         root.title(f"MilluminSync {__version__}")
@@ -96,6 +102,7 @@ class App:
         self._update_guide()
         self.root.after(50, self._drain_events)
         self.root.after(1000, self._update_ignored)
+        self.root.after(DIAG_INTERVAL_MS, self._diag_tick)
         if config.autostart:
             self.root.after(200, self.start)
 
@@ -126,7 +133,7 @@ class App:
         e_port.grid(row=1, column=1, sticky="w", padx=(0, 14), pady=4)
         ctk.CTkLabel(c, text="Slave の Millumin", font=font()).grid(row=2, column=0, sticky="w", padx=14, pady=4)
         e_target = ctk.CTkEntry(c, textvariable=self.var_target, font=font(13, mono=True),
-                                placeholder_text="127.0.0.1:5000")
+                                placeholder_text="127.0.0.1:12001")
         e_target.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=4)
         for e in (e_port, e_target):
             e.bind("<Return>", lambda _e: self._apply_connection())
@@ -172,6 +179,11 @@ class App:
         ctk.CTkLabel(test, text="Slave だけでテスト: Column", font=font()).pack(side="left")
         ctk.CTkEntry(test, textvariable=self.var_test, width=70, font=font(13, mono=True)).pack(side="left", padx=6)
         ctk.CTkButton(test, text="起動", width=64, font=font(), command=self.send_test).pack(side="left")
+        ctk.CTkButton(test, text="ポートを診断", width=96, font=font(12), fg_color="transparent", border_width=1,
+                      command=self.run_diagnosis).pack(side="left", padx=(8, 0))
+        self.lbl_diag = ctk.CTkLabel(t, text="", font=font(12), text_color=MUTED, wraplength=500, justify="left")
+        self.lbl_diag.grid(row=4, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 12))
+        self.lbl_diag.grid_remove()
 
         # Log
         lg = Card(r, "ログ")
@@ -205,15 +217,15 @@ class App:
         try:
             port = int(self.var_port.get().strip())
         except ValueError:
-            raise ValueError("受信ポートには数字を入力してください (例: 8000)")
+            raise ValueError("受信ポートには数字を入力してください (例: 12000)")
         if not 0 <= port <= 65535:
             raise ValueError("受信ポートは 0〜65535 で指定してください")
         try:
             targets = [Target.parse(t) for t in self.var_target.get().split(",") if t.strip()]
         except ValueError:
-            raise ValueError("Slave の Millumin は「IP:ポート」の形で入力してください (例: 127.0.0.1:5000)")
+            raise ValueError("Slave の Millumin は「IP:ポート」の形で入力してください (例: 127.0.0.1:12001)")
         if not targets:
-            raise ValueError("Slave の Millumin の送信先を入力してください (例: 127.0.0.1:5000)")
+            raise ValueError("Slave の Millumin の送信先を入力してください (例: 127.0.0.1:12001)")
         for t in targets:
             if t.port == port and t.host in ("127.0.0.1", "localhost"):
                 raise ValueError(f"送信先 {t} が受信ポートと同じです。Millumin の受信ポートとは別の番号にしてください")
@@ -280,9 +292,10 @@ class App:
         try:
             relay.start()
         except OSError as e:
+            who = diagnose_listen(port, port_users(port))
             self._show_error(
-                f"ポート {port} を開けませんでした。Millumin や Chataigne など、"
-                f"他のソフトが同じポートを使っていないか確認してください。({e})")
+                f"ポート {port} を開けませんでした。{who or 'Millumin や Chataigne など、他のソフトが同じポートを使っていないか確認してください。'}"
+                f" ({e})")
             return False
         self.relay = relay
         self._applied = (port, targets)
@@ -291,6 +304,7 @@ class App:
         self.lbl_status.configure(text=f"受信中  :{relay.listen_port}")
         self.btn_start.configure(text="停止", fg_color=("gray70", "gray30"))
         self._save()
+        self.run_diagnosis()
         return True
 
     def stop(self) -> None:
@@ -314,6 +328,50 @@ class App:
             return
         sender = self.relay or Relay(0, targets, [], on_event=self._on_relay_event)
         sender.send(OscMessage("/millumin/action/launchColumn", [arg]), targets)
+        # A UDP send "succeeds" even if nobody receives it, so check the port too.
+        self.run_diagnosis(force_log=True)
+
+    # ------------------------------------------------------------------ diagnosis
+    def _local_target_ports(self) -> list[int]:
+        try:
+            _, targets = self._parse_connection()
+        except ValueError:
+            return []
+        local = {"127.0.0.1", "localhost", *local_ipv4_addresses()}
+        return sorted({t.port for t in targets if t.host in local})
+
+    def run_diagnosis(self, force_log: bool = False) -> None:
+        """Check, in the background, who owns the slave Millumin's port."""
+        ports = self._local_target_ports()
+        if not ports or self._diag_running:
+            return
+        self._diag_running = True
+        self._diag_force_log = force_log
+
+        def work() -> None:
+            try:
+                for p in ports:
+                    self._diag_results.put((p, diagnose_target(p, port_users(p))))
+            finally:
+                self._diag_running = False
+
+        threading.Thread(target=work, name="diag", daemon=True).start()
+
+    def _diag_tick(self) -> None:
+        # Re-check periodically: the failure is intermittent, so log when it changes.
+        if self.relay and self.relay.running:
+            self.run_diagnosis()
+        self.root.after(DIAG_INTERVAL_MS, self._diag_tick)
+
+    def _show_diagnosis(self, port: int, d: Diagnosis) -> None:
+        prev = self._diag_last.get(port)
+        self._diag_last[port] = d
+        self.lbl_diag.configure(text=d.text, text_color=GREEN if d.ok else RED)
+        self.lbl_diag.grid()
+        if prev is None or prev.text != d.text or getattr(self, "_diag_force_log", False):
+            self._emit_info(f"診断: {d.text}") if d.ok else self._on_relay_event(
+                RelayEvent("error", f"診断: {d.text}", timestamp=time.time()))
+        self._diag_force_log = False
 
     # ------------------------------------------------------------------ log
     def _emit_info(self, text: str) -> None:
@@ -329,6 +387,11 @@ class App:
         try:
             while len(batch) < 200:
                 batch.append(self.events.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                self._show_diagnosis(*self._diag_results.get_nowait())
         except queue.Empty:
             pass
         if batch:
@@ -370,6 +433,7 @@ class App:
             self.lbl_ignored.configure(text=f"{self.lbl_ignored.cget('text')}  ログ省略 {self.events_lost} 行".strip())
             self.events_lost = 0
         self.root.after(1000, self._update_ignored)
+        self.root.after(DIAG_INTERVAL_MS, self._diag_tick)
 
     # ------------------------------------------------------------------ persistence
     def _save(self) -> None:
