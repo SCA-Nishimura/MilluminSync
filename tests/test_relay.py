@@ -57,6 +57,11 @@ class RelayTest(unittest.TestCase):
             self.assertEqual(got.address, "/millumin/action/launchColumn")
             self.assertEqual(got.args, [2])
             self.assertEqual(got.type_tags(), "i")
+        # The relay thread bumps its counter just after sendto(), so the slaves can
+        # see the packet a moment before the count updates.
+        deadline = time.monotonic() + 1.0
+        while self.relay.forwarded < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertEqual(self.relay.received, 1)
         self.assertEqual(self.relay.forwarded, 2)
 
