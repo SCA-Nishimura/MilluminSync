@@ -2,6 +2,8 @@
 
 Millumin どうしの **Column の起動を同期**するための中継ソフトです。Chataigne で Column を同期していた使い方を、これ1本で置き換えられます。
 
+現場での設定手順・トラブルシューティングは [取り扱い説明書.md](取り扱い説明書.md) を見てください。
+
 Master の Millumin で Column を起動すると、Millumin は `/millumin/board/launchedColumn <番号> <名前>` を OSC で送ります。MilluminSync はそれを受け取り、`/millumin/action/launchColumn` に変換して Slave の Millumin に送ります。
 
 ```
