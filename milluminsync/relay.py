@@ -35,7 +35,7 @@ class Target:
 @dataclass
 class RelayEvent:
     """Something that happened inside the relay, for logging / UI."""
-    kind: str  # "in", "out", "error", "info"
+    kind: str  # "in" (forwarded), "rx" (received, not forwarded), "out", "error", "info"
     text: str
     source: str = ""
     address: str = ""
@@ -65,6 +65,13 @@ class Relay:
         # Messages no rule matched (media time etc.), counted per address instead of
         # logged one by one: Millumin sends these every frame.
         self._ignored: dict[str, int] = {}
+        # An unmatched address is logged once it has been quiet this long, so a
+        # one-off event (a column launch with an unexpected address) shows up
+        # while a per-frame stream (media time) is logged only when it starts.
+        self.event_gap = 1.0
+        self._last_seen: dict[str, float] = {}
+        self.last_rx_time = 0.0       # time.time() of the last packet from anyone
+        self.last_rx_source = ""
         self._sock: socket.socket | None = None
         self._send_sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -176,6 +183,8 @@ class Relay:
                 time.sleep(0.1)
                 continue
             source = f"{addr[0]}:{addr[1]}"
+            self.last_rx_time = time.time()
+            self.last_rx_source = addr[0]
             try:
                 messages = list(decode_packet(data))
             except OscError as e:
@@ -185,8 +194,13 @@ class Relay:
                 self.received += 1
                 outs = self.process(msg)
                 if not outs:
+                    now = time.monotonic()
                     with self._lock:
                         self._ignored[msg.address] = self._ignored.get(msg.address, 0) + 1
+                        prev = self._last_seen.get(msg.address)
+                        self._last_seen[msg.address] = now
+                    if prev is None or now - prev > self.event_gap:
+                        self._emit("rx", str(msg), source=source, address=msg.address, message=msg)
                     continue
                 self._emit("in", str(msg), source=source, address=msg.address, message=msg)
                 for o in outs:

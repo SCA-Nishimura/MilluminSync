@@ -17,7 +17,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from . import __version__
-from .config import SYNC_BY_INDEX, SYNC_BY_NAME, Config
+from .config import SYNC_BY_INDEX, SYNC_BY_NAME, Config, log_dir
 from .diag import Diagnosis, diagnose_listen, diagnose_target, port_users
 from .osc import OscMessage
 from .relay import Relay, RelayEvent, Target
@@ -80,6 +80,7 @@ class App:
         self.config_path = config_path
         self.events: "queue.Queue[RelayEvent]" = queue.Queue(maxsize=MAX_PENDING_EVENTS)
         self.events_lost = 0
+        self._log_file_failed = False
         self.relay: Relay | None = None
         self._diag_results: "queue.Queue[tuple[int, Diagnosis]]" = queue.Queue()
         self._diag_running = False
@@ -87,7 +88,7 @@ class App:
         self._applied: tuple[int, list[Target]] | None = None
 
         root.title(f"MilluminSync {__version__}")
-        root.geometry("560x860")
+        root.geometry("560x900")
         root.minsize(480, 720)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -110,7 +111,7 @@ class App:
     def _build(self) -> None:
         r = self.root
         r.grid_columnconfigure(0, weight=1)
-        r.grid_rowconfigure(5, weight=1, minsize=200)
+        r.grid_rowconfigure(5, weight=1, minsize=170)
 
         # Header: status + start/stop
         head = ctk.CTkFrame(r, fg_color="transparent")
@@ -122,6 +123,8 @@ class App:
         self.lbl_status.grid(row=0, column=1, sticky="w", padx=(6, 0))
         self.btn_start = ctk.CTkButton(head, text="開始", width=96, command=self.toggle, font=font(13))
         self.btn_start.grid(row=0, column=2, sticky="e")
+        self.lbl_rx = ctk.CTkLabel(head, text="", font=font(12), text_color=MUTED)
+        self.lbl_rx.grid(row=1, column=1, columnspan=2, sticky="w", padx=(6, 0))
         self.lbl_error = ctk.CTkLabel(r, text="", font=font(12), text_color=RED, wraplength=520, justify="left")
         self.lbl_error.grid(row=1, column=0, sticky="w", padx=18)
 
@@ -192,13 +195,17 @@ class App:
         self.log = ctk.CTkTextbox(lg, font=font(12, mono=True), wrap="none", height=120)
         self.log.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=10, pady=(2, 4))
         self.log.configure(state="disabled")
-        for tag, color in (("in", "#4ea1ff"), ("out", GREEN), ("error", RED), ("info", "gray55")):
+        for tag, color in (("in", "#4ea1ff"), ("rx", "#c9a227"), ("out", GREEN), ("error", RED), ("info", "gray55")):
             self.log.tag_config(tag, foreground=color)
         self.lbl_ignored = ctk.CTkLabel(lg, text="", font=font(11), text_color=MUTED, justify="left",
                                         wraplength=420)
         self.lbl_ignored.grid(row=2, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 10))
-        ctk.CTkButton(lg, text="クリア", width=56, font=font(12), fg_color="transparent", border_width=1,
-                      command=self._clear_log).grid(row=2, column=2, sticky="e", padx=10, pady=(0, 10))
+        btns = ctk.CTkFrame(lg, fg_color="transparent")
+        btns.grid(row=2, column=2, sticky="e", padx=10, pady=(0, 10))
+        ctk.CTkButton(btns, text="ログを保存した場所", width=120, font=font(12), fg_color="transparent",
+                      border_width=1, command=self._open_log_dir).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(btns, text="クリア", width=56, font=font(12), fg_color="transparent", border_width=1,
+                      command=self._clear_log).pack(side="left")
 
     # ------------------------------------------------------------------ settings
     def _sync_by(self) -> str:
@@ -396,10 +403,18 @@ class App:
             pass
         if batch:
             self.log.configure(state="normal")
+            file_lines = []
             for ev in batch:
                 stamp = time.strftime("%H:%M:%S", time.localtime(ev.timestamp))
-                prefix = {"in": "IN ", "out": "OUT", "error": "ERR"}.get(ev.kind, "   ")
-                self.log.insert("end", f"{stamp} {prefix} {ev.text}\n", ev.kind)
+                prefix = {"in": "IN ", "rx": "IN ", "out": "OUT", "error": "ERR"}.get(ev.kind, "   ")
+                text = ev.text
+                if ev.kind in ("in", "rx") and ev.source:
+                    text += f"  ← {ev.source.split(':')[0]}"
+                if ev.kind == "rx":
+                    text += "  (転送なし)"
+                line = f"{stamp} {prefix} {text}"
+                self.log.insert("end", line + "\n", ev.kind)
+                file_lines.append(line)
                 if ev.kind == "in" and ev.message and ev.address == "/millumin/board/launchedColumn":
                     self._show_last_sync(ev)
             excess = int(self.log.index("end-1c").split(".")[0]) - MAX_LOG_LINES
@@ -407,7 +422,35 @@ class App:
                 self.log.delete("1.0", f"{excess + 1}.0")
             self.log.configure(state="disabled")
             self.log.see("end")
+            self._write_log_file(file_lines)
         self.root.after(50, self._drain_events)
+
+    def _write_log_file(self, lines: list[str]) -> None:
+        """Keep a daily log file so an intermittent failure can be looked at afterwards."""
+        if not lines or self._log_file_failed:
+            return
+        try:
+            path = log_dir() / time.strftime("%Y-%m-%d.log")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError:
+            self._log_file_failed = True
+
+    def _open_log_dir(self) -> None:
+        import subprocess
+        path = log_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            elif sys.platform == "win32":
+                import os
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except OSError as e:
+            self._emit_info(f"ログフォルダを開けませんでした: {path} ({e})")
 
     def _show_last_sync(self, ev: RelayEvent) -> None:
         args = ev.message.args if ev.message else []
@@ -420,20 +463,27 @@ class App:
         self.lbl_last_time.configure(text=f"{clock}  Master {ev.source.split(':')[0]} から受信")
 
     def _update_ignored(self) -> None:
+        if self.relay and self.relay.last_rx_time:
+            ago = max(0, int(time.time() - self.relay.last_rx_time))
+            clock = time.strftime("%H:%M:%S", time.localtime(self.relay.last_rx_time))
+            self.lbl_rx.configure(text=f"最終受信 {clock}（{ago} 秒前） ← {self.relay.last_rx_source}")
+        elif self.relay:
+            self.lbl_rx.configure(text="まだ何も受信していません")
+        else:
+            self.lbl_rx.configure(text="")
         if self.relay:
             ignored = self.relay.take_ignored()
             total = sum(ignored.values())
             if total:
                 names = sorted(ignored, key=ignored.get, reverse=True)[:2]
                 short = ", ".join(n.replace("/millumin/", "") for n in names)
-                self.lbl_ignored.configure(text=f"転送しない受信 {total} 通/秒  ({short} など)")
+                self.lbl_ignored.configure(text=f"転送なし {total} 通/秒  ({short} など)")
             else:
                 self.lbl_ignored.configure(text="")
         if self.events_lost:
             self.lbl_ignored.configure(text=f"{self.lbl_ignored.cget('text')}  ログ省略 {self.events_lost} 行".strip())
             self.events_lost = 0
         self.root.after(1000, self._update_ignored)
-        self.root.after(DIAG_INTERVAL_MS, self._diag_tick)
 
     # ------------------------------------------------------------------ persistence
     def _save(self) -> None:

@@ -29,6 +29,12 @@ def config_dir() -> Path:
     return base / APP_NAME
 
 
+def log_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / APP_NAME
+    return config_dir() / "logs"
+
+
 def default_config_path() -> Path:
     return config_dir() / "config.json"
 

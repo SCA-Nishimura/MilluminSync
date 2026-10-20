@@ -73,6 +73,8 @@ def run_selftest(timeout: float = 10.0) -> int:
             # Media time feedback must NOT reach the slave; only the column launch should.
             for t in (1.0, 1.02, 1.04):
                 s.sendto(encode_message(OscMessage("/millumin/layer:Video/media/time", [t, 60.0])), dest)
+            # An address no rule knows must still show up in the log (as "not forwarded").
+            s.sendto(encode_message(OscMessage("/millumin/board/selftestUnknown", [1])), dest)
             s.sendto(encode_message(OscMessage("/millumin/board/launchedColumn", [3, "Intro"])), dest)
         root.after(20, poll)
 
@@ -103,8 +105,11 @@ def run_selftest(timeout: float = 10.0) -> int:
         from .gui import ASSETS
         shown = app.lbl_last.cget("text")
         missing = [n for n in ("icon.ico", "icon-256.png") if not (ASSETS / n).exists()]
+        log_text = app.log.get("1.0", "end")
         if shown != "Column 3  Intro":
             result["detail"] += f" / UI shows {shown!r}"
+        elif "selftestUnknown" not in log_text or "(転送なし)" not in log_text:
+            result["detail"] += " / unmatched message was not logged"
         elif missing:
             # Catches a packaged app built without its data files.
             result["detail"] += f" / missing assets {missing}"

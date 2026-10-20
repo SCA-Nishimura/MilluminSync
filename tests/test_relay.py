@@ -93,8 +93,22 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.slaves[0].recv().args, [7])
         self.assertEqual(self.relay.take_ignored(), {"/millumin/layer:V/media/time": 50})
         self.assertEqual(self.relay.take_ignored(), {})
-        # Nothing per-message was logged for the ignored traffic.
-        self.assertFalse(any("media/time" in e.text for e in self.events))
+        # The stream is logged once (when it starts), not per message.
+        self.assertEqual(sum("media/time" in e.text for e in self.events), 1)
+
+    def test_unmatched_event_is_logged_with_source(self):
+        # e.g. Master sends a column launch under an address no rule knows.
+        self.relay.event_gap = 0.05
+        for _ in range(3):
+            send(self.relay.listen_port, OscMessage("/millumin/board/somethingNew", [1]))
+            time.sleep(0.15)
+        send(self.relay.listen_port, OscMessage("/millumin/action/stopColumn"))
+        self.slaves[0].recv()
+        rx = [e for e in self.events if e.kind == "rx"]
+        self.assertEqual(len(rx), 3)
+        self.assertTrue(all(e.source.startswith("127.0.0.1:") for e in rx))
+        self.assertEqual(self.relay.last_rx_source, "127.0.0.1")
+        self.assertGreater(self.relay.last_rx_time, 0)
 
     def test_rule_update_while_running(self):
         from milluminsync.rules import Rule
