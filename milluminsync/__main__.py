@@ -100,11 +100,16 @@ def run_selftest(timeout: float = 10.0) -> int:
             app.on_close()
 
     def check_ui() -> None:
+        from .gui import ASSETS
         shown = app.lbl_last.cget("text")
-        if shown == "Column 3  Intro":
-            result["ok"] = True
-        else:
+        missing = [n for n in ("icon.ico", "icon-256.png") if not (ASSETS / n).exists()]
+        if shown != "Column 3  Intro":
             result["detail"] += f" / UI shows {shown!r}"
+        elif missing:
+            # Catches a packaged app built without its data files.
+            result["detail"] += f" / missing assets {missing}"
+        else:
+            result["ok"] = True
         app.on_close()
 
     root.after(300, kick)

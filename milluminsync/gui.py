@@ -393,10 +393,31 @@ class App:
         self.root.destroy()
 
 
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def _set_window_icon(root: ctk.CTk) -> None:
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            # Own taskbar entry/icon instead of grouping under python.exe.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MilluminSync")
+            # Calling iconbitmap also stops CustomTkinter from applying its own icon.
+            root.iconbitmap(str(ASSETS / "icon.ico"))
+        else:
+            import tkinter as tk
+            root._icon_image = tk.PhotoImage(file=str(ASSETS / "icon-256.png"))
+            root.iconphoto(True, root._icon_image)
+    except Exception:
+        pass  # a missing icon must never stop the app
+
+
 def create_root() -> ctk.CTk:
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
-    return ctk.CTk()
+    root = ctk.CTk()
+    _set_window_icon(root)
+    return root
 
 
 def run(config_path: Path | None = None) -> None:
