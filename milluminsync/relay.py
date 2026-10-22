@@ -87,10 +87,13 @@ class Relay:
         if self.running:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        if sys.platform != "win32":
-            # On Windows SO_REUSEADDR lets two programs share the port silently,
-            # which would hide a conflict with Millumin / Chataigne.
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # If another program already holds this port on a specific address
+        # (e.g. 192.168.x.x:8000), binding 0.0.0.0 may still succeed and the OS
+        # then hands every packet to that program: we would look "running" but
+        # never receive. Make that bind fail instead, so the conflict is reported.
+        # (No SO_REUSEADDR on macOS for the same reason.)
+        if sys.platform == "win32":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             sock.bind((self.listen_host, self.listen_port))
         except OSError:

@@ -83,5 +83,23 @@ class DiagnoseTest(unittest.TestCase):
         self.assertTrue(diagnose_target(5000, None).ok)
 
 
+
+class OwnPortTest(unittest.TestCase):
+    def test_only_us(self):
+        from milluminsync.diag import diagnose_own_port
+        self.assertTrue(diagnose_own_port(12000, [PortUser("UDP", "MilluminSync", 10)], 10).ok)
+
+    def test_someone_else_also_listens(self):
+        from milluminsync.diag import diagnose_own_port
+        d = diagnose_own_port(8000, [PortUser("UDP", "MilluminSync", 10), PortUser("UDP", "SomeApp", 11)], 10)
+        self.assertFalse(d.ok)
+        self.assertIn("SomeApp", d.text)
+        self.assertIn("to port", d.text)
+
+    def test_unknown(self):
+        from milluminsync.diag import diagnose_own_port
+        self.assertTrue(diagnose_own_port(8000, None, 10).ok)
+
+
 if __name__ == "__main__":
     unittest.main()

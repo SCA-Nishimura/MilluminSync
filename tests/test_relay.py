@@ -129,6 +129,19 @@ class PortConflictTest(unittest.TestCase):
             blocker.close()
 
 
+    def test_port_held_on_specific_address_raises(self):
+        # Another program on 127.0.0.1:P must not let us bind 0.0.0.0:P silently,
+        # otherwise it would receive everything the master sends.
+        squatter = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        squatter.bind(("127.0.0.1", 0))
+        try:
+            relay = Relay(squatter.getsockname()[1], [], [])
+            with self.assertRaises(OSError):
+                relay.start()
+        finally:
+            squatter.close()
+
+
 class ConfigTest(unittest.TestCase):
     def test_save_load(self):
         path = Path(tempfile.mkdtemp()) / "c.json"

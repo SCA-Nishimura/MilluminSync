@@ -18,7 +18,7 @@ import customtkinter as ctk
 
 from . import __version__
 from .config import SYNC_BY_INDEX, SYNC_BY_NAME, Config, log_dir
-from .diag import Diagnosis, diagnose_listen, diagnose_target, port_users
+from .diag import Diagnosis, diagnose_listen, diagnose_own_port, diagnose_target, port_users
 from .osc import OscMessage
 from .relay import Relay, RelayEvent, Target
 
@@ -82,7 +82,8 @@ class App:
         self.events_lost = 0
         self._log_file_failed = False
         self.relay: Relay | None = None
-        self._diag_results: "queue.Queue[tuple[int, Diagnosis]]" = queue.Queue()
+        self._diag_results: "queue.Queue[tuple[str, int, Diagnosis]]" = queue.Queue()
+        self._own_port_warning = ""
         self._diag_running = False
         self._diag_last: dict[int, Diagnosis] = {}
         self._applied: tuple[int, list[Target]] | None = None
@@ -348,17 +349,22 @@ class App:
         return sorted({t.port for t in targets if t.host in local})
 
     def run_diagnosis(self, force_log: bool = False) -> None:
-        """Check, in the background, who owns the slave Millumin's port."""
+        """Check, in the background, who owns the slave Millumin's port and our own port."""
         ports = self._local_target_ports()
-        if not ports or self._diag_running:
+        own = self.relay.listen_port if self.relay and self.relay.running else None
+        if (not ports and own is None) or self._diag_running:
             return
         self._diag_running = True
         self._diag_force_log = force_log
 
         def work() -> None:
+            import os
             try:
+                if own is not None:
+                    d = diagnose_own_port(own, port_users(own), os.getpid())
+                    self._diag_results.put(("own", own, d))
                 for p in ports:
-                    self._diag_results.put((p, diagnose_target(p, port_users(p))))
+                    self._diag_results.put(("target", p, diagnose_target(p, port_users(p))))
             finally:
                 self._diag_running = False
 
@@ -370,9 +376,22 @@ class App:
             self.run_diagnosis()
         self.root.after(DIAG_INTERVAL_MS, self._diag_tick)
 
-    def _show_diagnosis(self, port: int, d: Diagnosis) -> None:
-        prev = self._diag_last.get(port)
-        self._diag_last[port] = d
+    def _show_diagnosis(self, kind: str, port: int, d: Diagnosis) -> None:
+        key = f"{kind}:{port}"
+        prev = self._diag_last.get(key)
+        self._diag_last[key] = d
+        if kind == "own":
+            # Shown at the top: it means the master's OSC may never reach us.
+            if not d.ok:
+                self._own_port_warning = d.text
+                self._show_error(d.text)
+            elif self._own_port_warning:
+                if self.lbl_error.cget("text") == self._own_port_warning:
+                    self._show_error("")
+                self._own_port_warning = ""
+            if not d.ok and (prev is None or prev.text != d.text):
+                self._on_relay_event(RelayEvent("error", f"診断: {d.text}", timestamp=time.time()))
+            return
         self.lbl_diag.configure(text=d.text, text_color=GREEN if d.ok else RED)
         self.lbl_diag.grid()
         if prev is None or prev.text != d.text or getattr(self, "_diag_force_log", False):

@@ -138,6 +138,19 @@ def diagnose_target(port: int, users: list[PortUser] | None) -> Diagnosis:
     return Diagnosis(True, f"ポート {port}: {udp_millumin[0].process} が受信しています ✓")
 
 
+def diagnose_own_port(port: int, users: list[PortUser] | None, own_pid: int) -> Diagnosis:
+    """Check that nobody else also receives on MilluminSync's own port."""
+    if users is None:
+        return Diagnosis(True, "")
+    others = [u for u in users if u.pid != own_pid and u.proto == "UDP"]
+    if others:
+        return Diagnosis(False,
+            f"受信ポート {port} を {_names(others)} も使っています。Master からの OSC がそちらに"
+            f"取られて、MilluminSync に届かないことがあります。受信ポートを別の番号に変え、"
+            f"Master の Millumin の to port も同じ番号にしてください。")
+    return Diagnosis(True, "")
+
+
 def diagnose_listen(port: int, users: list[PortUser] | None) -> str:
     """Explain why MilluminSync could not open its own port."""
     if not users:
